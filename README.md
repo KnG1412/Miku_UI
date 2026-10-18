@@ -89,10 +89,6 @@ Everything lives in `KnG1412_UI.c`:
 - Data collectors: CPU, RAM, drives, battery, GPU (PDH + DXGI), app list.
 - Card drawing functions and the window loop (`wWinMain`, `WindowProc`).
 
-## Image note
-
-The ASCII art in the middle depicts the character Hatsune Miku, which belongs to Crypton Future Media. If you redistribute this or use it commercially, check their usage terms and replace the art if needed.
-
 ## License
 
 The code is released under the [MIT License](LICENSE). The license covers the code only; the embedded Miku artwork is not covered by it (see *Image note* above).
