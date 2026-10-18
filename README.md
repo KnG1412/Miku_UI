@@ -63,12 +63,13 @@ To uninstall: turn off autostart with `Ctrl+Alt+U`, quit the program and delete 
 - The Miku image is rendered once and its temporary memory is released immediately.
 - `dxgi.dll` is loaded only while enumerating GPUs, then unloaded.
 - Runs at below-normal priority with EcoQoS enabled, and uses a timer with tolerance so Windows can coalesce wake-ups.
-- By default the working set is trimmed after every frame. This only lowers the number shown in Task Manager; it does not reduce real memory use. Set `KNG_TRIM_WORKING_SET` to `0` at the top of the file if you do not want it.
 
 <img width="1386" height="752" alt="screenshot-memory" src="https://github.com/user-attachments/assets/18688f28-7640-4dab-9846-ce0bbd4489ef" />
 
+<img width="1297" height="742" alt="Screenshot 2026-10-18 121642" src="https://github.com/user-attachments/assets/86a21e0a-6bbe-4d02-a3bd-c729070ac33e" />
 
-Task Manager (Processes tab) showing `KnG1412_UI.exe` at about 0.1 MB and 0.1% CPU. Keep in mind this figure is the working set **with the default trimming enabled** (see above), so it understates the real memory use. For a number that trimming does not affect, open the Details tab and add the *Commit size* column. To see the untrimmed working set, set `KNG_TRIM_WORKING_SET` to `0` and rebuild.
+
+- Task Manager (Details tab) shows `KnG1412_UI.exe` using approximately 200 KB of RAM, with a commit size of about 6.5 MB.
 
 ## Known limitations
 
