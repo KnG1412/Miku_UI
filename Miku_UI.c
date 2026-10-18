@@ -30,14 +30,14 @@
 #pragma comment(lib, "dwmapi.lib")
 
 /* Miku//UI HUD  (low-memory build)
-   - Native Win32 + GDI only. No OpenGL => opengl32.dll and the GPU vendor ICD
-     (nvoglv64 / igxprd...) are never loaded; that driver stack was by far the
-     biggest RAM cost of the OpenGL version.
+   - Native Win32 + GDI only. No OpenGL, so opengl32.dll and the GPU vendor
+     driver are never loaded into the process.
    - The screen is repainted in 64-row bands through ONE ~0.5 MB scratch DIB
      instead of a full-screen back buffer.
    - The ASCII Miku is rasterized once into a temporary DIB, stretched to the
      window, and the DIB is freed immediately. It is only redrawn if the system
-     invalidates the window.
+     invalidates the window, and not at all while it is hidden (Ctrl+Alt+M).
+   - Each tick only the screen regions that can change are repainted.
    - dxgi.dll is loaded only long enough to enumerate adapters, then unloaded.
    - Real Windows CPU, RAM, GPU Engine, battery and disk metrics.
 */
@@ -53,16 +53,15 @@
 #define BAND_H 64
 
 /* Poll periods, counted in main-timer ticks (1 tick ~= FRAME_MS). Counting
-   ticks instead of comparing GetTickCount64() deltas avoids the old bug where
-   a timer firing at 998 ms skipped the poll and the data went stale for 2 s. */
+   ticks is immune to timer jitter, unlike comparing GetTickCount64() deltas. */
 #define DISK_EVERY_TICKS 5u
 #define APP_EVERY_TICKS 3u
 
 /* 1 = trim the working set after every frame. This only lowers the number
    Task Manager shows (pages go to the standby list); it does not change the
    real committed memory. Set to 0 if you prefer not to do it. */
-#ifndef KNG_TRIM_WORKING_SET
-#define KNG_TRIM_WORKING_SET 1
+#ifndef MIKU_TRIM_WORKING_SET
+#define MIKU_TRIM_WORKING_SET 1
 #endif
 
 #define TIMER_MAIN 1
@@ -82,13 +81,7 @@
 #define APP_MUTEX L"Local\\Miku_UI_SingleInstance"
 #define RUN_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #define RUN_VALUE L"Miku_UI"
-#define OLD_RUN_VALUE L"AereReact"          /* removed on upgrade */
-#define OLD_RUN_VALUE2 L"KnG_UI"            /* removed on upgrade */
-#define OLD_RUN_VALUE3 L"KnG1412_UI"        /* removed on upgrade */
 #define PREF_KEY L"Software\\Miku_UI"
-#define OLD_PREF_KEY L"Software\\AereReactHUD" /* migrated on upgrade */
-#define OLD_PREF_KEY2 L"Software\\KnG_UI"     /* migrated on upgrade */
-#define OLD_PREF_KEY3 L"Software\\KnG1412_UI" /* migrated on upgrade */
 #define PREF_DISABLE_AUTOSTART L"AutostartDisabled"
 #define PREF_MIKU_HIDDEN L"MikuHidden"
 
@@ -126,7 +119,6 @@ typedef struct APP_SCAN_CONTEXT {
 
 typedef struct METRICS {
     double cpuPercent;
-    double cpuMHz;
     double intelGpuPercent;
     double nvidiaGpuPercent;
     double ramPercent;
@@ -190,7 +182,7 @@ static int g_bandTop = 0;
 static int g_bandFont = -1;
 static int g_gdiPending = 0;
 
-static METRICS g_metrics = { -1.0, -1.0, -1.0, -1.0, -1.0, 0.0, 0.0, -1, 0, 0, 0 };
+static METRICS g_metrics = { -1.0, -1.0, -1.0, -1.0, 0.0, 0.0, -1, 0, 0, 0 };
 static DISK_METRICS g_diskC = { -1.0, 0.0, 0.0, -1.0, 0.0, 0 };
 static DISK_METRICS g_diskD = { -1.0, 0.0, 0.0, -1.0, 0.0, 0 };
 static double g_histCpu[HISTORY_N];
@@ -486,7 +478,7 @@ static int toByte(float v)
 
 static void trimWorkingSet(void)
 {
-#if KNG_TRIM_WORKING_SET
+#if MIKU_TRIM_WORKING_SET
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 #endif
 }
@@ -678,7 +670,7 @@ static void line2(float x1, float y1, float x2, float y2, float r, float g, floa
     }
 }
 
-/* y is the text baseline, like the old glRasterPos2f(). Alpha is applied by
+/* y is the text baseline. Alpha is applied by
    pre-multiplying against black; every panel background is near-black. */
 static void textOut(int fontIndex, float x, float y, const WCHAR *s,
                     float r, float g, float b, float a)
@@ -945,7 +937,7 @@ static int adapterIndexFromLuidText(const WCHAR *instance)
 /* dxgi.dll is loaded dynamically and unloaded right after enumeration, so it
    (and the DLLs it pulls in) does not stay in the process. The IID is spelled
    out here to avoid linking dxguid.lib. */
-typedef HRESULT (WINAPI *PFN_KNG_CREATE_DXGI_FACTORY1)(REFIID riid, void **ppFactory);
+typedef HRESULT (WINAPI *PFN_CREATE_DXGI_FACTORY1)(REFIID riid, void **ppFactory);
 
 static const GUID k_iidDxgiFactory1 =
     { 0x770aae78, 0xf26f, 0x4dba, { 0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87 } };
@@ -953,7 +945,7 @@ static const GUID k_iidDxgiFactory1 =
 static void enumerateAdapters(void)
 {
     HMODULE dxgi;
-    PFN_KNG_CREATE_DXGI_FACTORY1 createFactory;
+    PFN_CREATE_DXGI_FACTORY1 createFactory;
     IDXGIFactory1 *factory = NULL;
     UINT index;
 
@@ -963,7 +955,7 @@ static void enumerateAdapters(void)
 
     dxgi = LoadLibraryExW(L"dxgi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!dxgi) return;
-    createFactory = (PFN_KNG_CREATE_DXGI_FACTORY1)(void *)GetProcAddress(dxgi, "CreateDXGIFactory1");
+    createFactory = (PFN_CREATE_DXGI_FACTORY1)(void *)GetProcAddress(dxgi, "CreateDXGIFactory1");
     if (createFactory && SUCCEEDED(createFactory(&k_iidDxgiFactory1, (void **)&factory)) && factory) {
         for (index = 0; index < 32 && g_adapterCount < MAX_ADAPTERS; ++index) {
             IDXGIAdapter1 *adapter = NULL;
@@ -1109,9 +1101,8 @@ static void setGpuUnavailable(void)
     g_metrics.nvidiaGpuPercent = -1.0;
 }
 
-/* The old version called PdhGetFormattedCounterArrayW twice per second (once
-   to ask for the size, once to read), formatting every GPU Engine instance
-   twice. The buffer capacity is now remembered, so normally one call is enough. */
+/* The buffer capacity is remembered between ticks, so normally a single
+   PdhGetFormattedCounterArrayW call per second is enough. */
 static void pollGpuUsage(void)
 {
     static BYTE *buffer = NULL;
@@ -1250,7 +1241,7 @@ static BOOL CALLBACK enumVisibleApps(HWND hwnd, LPARAM lParam)
     if (!IsWindowVisible(hwnd) || hwnd == g_hwnd) return TRUE;
     if (GetWindow(hwnd, GW_OWNER) != NULL) return TRUE;
     /* Suspended/hidden UWP windows are "visible" but cloaked by DWM; they are
-       not really open apps and used to cause bogus OPENED/CLOSED events. */
+       not really open apps, so they are skipped. */
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
         return TRUE;
     if (GetWindowTextLengthW(hwnd) <= 0) return TRUE;
@@ -1313,10 +1304,8 @@ static void pollAllMetrics(void)
     pushHistory();
 }
 
-/* The old version kept two huge stack buffers (64 KB + 66 KB). The compiler's
-   stack probe touches every page of such frames, so ~130 KB stayed resident.
-   Paths are limited to 1023 characters here, and the registry is only written
-   when the stored command actually differs. */
+/* Small stack buffers (paths up to 1023 characters), and the registry is only
+   written when the stored command actually differs. */
 static void setAutostart(int enabled)
 {
     HKEY key = NULL;
@@ -1341,9 +1330,6 @@ static void setAutostart(int enabled)
             current[currentBytes / sizeof(WCHAR)] = L'\0';
             same = (wcscmp(current, command) == 0);
         }
-        RegDeleteValueW(key, OLD_RUN_VALUE); /* old "AereReact" entry */
-        RegDeleteValueW(key, OLD_RUN_VALUE2); /* old "KnG_UI" entry */
-        RegDeleteValueW(key, OLD_RUN_VALUE3); /* old "KnG1412_UI" entry */
         if (!same) {
             RegSetValueExW(key, RUN_VALUE, 0, REG_SZ,
                 (const BYTE *)command, (DWORD)((wcslen(command) + 1) * sizeof(WCHAR)));
@@ -1354,104 +1340,61 @@ static void setAutostart(int enabled)
         status = RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &key);
         if (status == ERROR_SUCCESS) {
             RegDeleteValueW(key, RUN_VALUE);
-            RegDeleteValueW(key, OLD_RUN_VALUE);
-            RegDeleteValueW(key, OLD_RUN_VALUE2);
-            RegDeleteValueW(key, OLD_RUN_VALUE3);
             RegCloseKey(key);
         }
         g_autostart = 0;
     }
 }
 
-static int prefDisabledIn(const WCHAR *keyName)
+/* Small boolean preferences stored under HKCU\Software\Miku_UI. */
+static int readPrefFlag(const WCHAR *name)
 {
     HKEY key = NULL;
     DWORD value = 0;
     DWORD size = sizeof(value);
     DWORD type = REG_DWORD;
-    int disabled = 0;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, keyName, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
-        if (RegQueryValueExW(key, PREF_DISABLE_AUTOSTART, NULL, &type,
-            (BYTE *)&value, &size) == ERROR_SUCCESS && type == REG_DWORD && value == 1)
-            disabled = 1;
+    int on = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, PREF_KEY, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(key, name, NULL, &type, (BYTE *)&value, &size) == ERROR_SUCCESS &&
+            type == REG_DWORD && value == 1)
+            on = 1;
         RegCloseKey(key);
     }
-    return disabled;
+    return on;
 }
 
-/* Also honours an opt-out saved by earlier builds (AereReact, KnG_UI, KnG1412_UI). */
+static void writePrefFlag(const WCHAR *name, int on)
+{
+    HKEY key = NULL;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, PREF_KEY, 0, NULL, 0,
+        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) return;
+    if (on) {
+        DWORD value = 1;
+        RegSetValueExW(key, name, 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+    } else {
+        RegDeleteValueW(key, name);
+    }
+    RegCloseKey(key);
+}
+
 static int autostartWasManuallyDisabled(void)
 {
-    return prefDisabledIn(PREF_KEY) || prefDisabledIn(OLD_PREF_KEY) ||
-           prefDisabledIn(OLD_PREF_KEY2) || prefDisabledIn(OLD_PREF_KEY3);
+    return readPrefFlag(PREF_DISABLE_AUTOSTART);
 }
 
 static void saveAutostartDisabledPreference(int disabled)
 {
-    HKEY key = NULL;
-    /* Drop the old build's preference so it cannot override this one. */
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_PREF_KEY, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-        RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
-        RegCloseKey(key);
-    }
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_PREF_KEY2, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-        RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
-        RegCloseKey(key);
-    }
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_PREF_KEY3, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-        RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
-        RegCloseKey(key);
-    }
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, PREF_KEY, 0, NULL, 0,
-        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) return;
-    if (disabled) {
-        DWORD value = 1;
-        RegSetValueExW(key, PREF_DISABLE_AUTOSTART, 0, REG_DWORD,
-            (const BYTE *)&value, sizeof(value));
-    } else {
-        RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
-    }
-    RegCloseKey(key);
-}
-
-static int mikuHiddenIn(const WCHAR *keyName)
-{
-    HKEY key = NULL;
-    DWORD value = 0;
-    DWORD size = sizeof(value);
-    DWORD type = REG_DWORD;
-    int hidden = 0;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, keyName, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
-        if (RegQueryValueExW(key, PREF_MIKU_HIDDEN, NULL, &type,
-            (BYTE *)&value, &size) == ERROR_SUCCESS && type == REG_DWORD && value == 1)
-            hidden = 1;
-        RegCloseKey(key);
-    }
-    return hidden;
+    writePrefFlag(PREF_DISABLE_AUTOSTART, disabled);
 }
 
 static void loadMikuPreference(void)
 {
-    g_showMiku = !(mikuHiddenIn(PREF_KEY) || mikuHiddenIn(OLD_PREF_KEY3));
+    g_showMiku = !readPrefFlag(PREF_MIKU_HIDDEN);
 }
 
 static void saveMikuPreference(void)
 {
-    HKEY key = NULL;
-    /* Drop the value the previous build stored, so it cannot override this one. */
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_PREF_KEY3, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
-        RegDeleteValueW(key, PREF_MIKU_HIDDEN);
-        RegCloseKey(key);
-    }
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, PREF_KEY, 0, NULL, 0,
-        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) return;
-    if (g_showMiku) {
-        RegDeleteValueW(key, PREF_MIKU_HIDDEN);
-    } else {
-        DWORD value = 1;
-        RegSetValueExW(key, PREF_MIKU_HIDDEN, 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
-    }
-    RegCloseKey(key);
+    writePrefFlag(PREF_MIKU_HIDDEN, !g_showMiku);
 }
 
 /* Takes effect through a full repaint: it clears the art when hiding and
@@ -1465,7 +1408,7 @@ static void toggleMiku(void)
 
 static void initializeAutostart(void)
 {
-    /* Preserve the old first-run auto-start behavior, but remember an explicit opt-out. */
+    /* Autostart is on by default; an explicit opt-out is remembered. */
     if (autostartWasManuallyDisabled()) setAutostart(0);
     else setAutostart(1);
 }
@@ -2098,8 +2041,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     (void)lpCmdLine;
     (void)nCmdShow;
 
-    /* Only one HUD at a time (a second copy used to stack another overlay,
-       another PDH query and another 40 ms key-poll timer). */
+    /* Only one instance at a time. */
     singleton = CreateMutexW(NULL, FALSE, APP_MUTEX);
     if (singleton && GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(singleton);
