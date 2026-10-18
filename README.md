@@ -7,7 +7,7 @@ A single C file written with Win32 + GDI. No third-party libraries and no extra 
 <img width="1919" height="1079" alt="screenshot-ui" src="https://github.com/user-attachments/assets/923be738-7312-4a44-99c0-f5d118f1f99f" />
 
 
-> **About this project:** most of the code was produced by "vibe coding" (written together with an AI). I use it daily on my own machine, but it has not been tested widely across different setups. If you hit a bug, please open an issue with your hardware info (CPU, GPU, Windows version, resolution, display scaling) so it is easier to look into.
+> **About this project:** most of the code was produced by "vibe coding" (written together with an AI). I use it daily on my own machine, but it has not been tested widely across different setups.
 
 ## Features
 
