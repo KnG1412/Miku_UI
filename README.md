@@ -7,7 +7,6 @@ A single C file written with Win32 + GDI. No third-party libraries and no extra 
 
 <img width="1919" height="1079" alt="Screenshot 2026-10-18 190803" src="https://github.com/user-attachments/assets/fdbf4b57-58ba-4419-a253-a00d9cfb2ad4" />
 
-
 > **About this project:** most of the code was produced by "vibe coding" (written together with an AI). I use it daily on my own machine, but it has not been tested widely across different setups.
 
 ## Features
