@@ -29,7 +29,7 @@
 #pragma comment(lib, "pdh.lib")
 #pragma comment(lib, "dwmapi.lib")
 
-/* KnG1412//UI HUD  (low-memory build)
+/* Miku//UI HUD  (low-memory build)
    - Native Win32 + GDI only. No OpenGL => opengl32.dll and the GPU vendor ICD
      (nvoglv64 / igxprd...) are never loaded; that driver stack was by far the
      biggest RAM cost of the OpenGL version.
@@ -70,23 +70,27 @@
 #define HOTKEY_HUD 101
 #define HOTKEY_AUTOSTART 102
 #define HOTKEY_QUIT 103
+#define HOTKEY_MIKU 104
 #define MIKU_ASCII_COLS 120
 #define MIKU_ASCII_ROWS 83
 #define MIKU_CELL_W 7
 #define MIKU_CELL_H 12
 #define MIKU_ART_WIDTH (MIKU_ASCII_COLS * MIKU_CELL_W)
 #define MIKU_ART_HEIGHT (MIKU_ASCII_ROWS * MIKU_CELL_H)
-#define APP_CLASS L"KnG1412_UIWindow"
-#define APP_TITLE L"KnG1412//UI HUD"
-#define APP_MUTEX L"Local\\KnG1412_UI_SingleInstance"
+#define APP_CLASS L"Miku_UIWindow"
+#define APP_TITLE L"Miku//UI HUD"
+#define APP_MUTEX L"Local\\Miku_UI_SingleInstance"
 #define RUN_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
-#define RUN_VALUE L"KnG1412_UI"
+#define RUN_VALUE L"Miku_UI"
 #define OLD_RUN_VALUE L"AereReact"          /* removed on upgrade */
 #define OLD_RUN_VALUE2 L"KnG_UI"            /* removed on upgrade */
-#define PREF_KEY L"Software\\KnG1412_UI"
+#define OLD_RUN_VALUE3 L"KnG1412_UI"        /* removed on upgrade */
+#define PREF_KEY L"Software\\Miku_UI"
 #define OLD_PREF_KEY L"Software\\AereReactHUD" /* migrated on upgrade */
 #define OLD_PREF_KEY2 L"Software\\KnG_UI"     /* migrated on upgrade */
+#define OLD_PREF_KEY3 L"Software\\KnG1412_UI" /* migrated on upgrade */
 #define PREF_DISABLE_AUTOSTART L"AutostartDisabled"
+#define PREF_MIKU_HIDDEN L"MikuHidden"
 
 #ifndef ARRAYSIZE
 #define ARRAYSIZE(a) (sizeof(a) / sizeof((a)[0]))
@@ -156,6 +160,11 @@ static int g_autostart = 1;
 static int g_exitRequested = 0;
 static int g_ready = 0;
 static int g_mikuDirty = 1;
+static int g_showMiku = 1;
+static int g_allRects = 0;   /* 1 = repaint every region once (e.g. after hiding the HUD) */
+static RECT g_rects[6];      /* regions that can change; everything else is never touched */
+static int g_rectHud[6];
+static int g_rectCount = 0;
 static int g_globalHotkeysRegistered = 0;
 static unsigned int g_tick = 0;
 static float g_uiShift = 38.0f;
@@ -744,6 +753,22 @@ static unsigned int hexDigitValue(char ch)
 /* Layout                                                              */
 /* ------------------------------------------------------------------ */
 
+static void addDirtyRect(int l, int t, int r, int b, int hud)
+{
+    if (g_rectCount >= (int)ARRAYSIZE(g_rects)) return;
+    if (l < 0) l = 0;
+    if (t < 0) t = 0;
+    if (r > g_width) r = g_width;
+    if (b > g_height) b = g_height;
+    if (r <= l || b <= t) return;
+    g_rects[g_rectCount].left = l;
+    g_rects[g_rectCount].top = t;
+    g_rects[g_rectCount].right = r;
+    g_rects[g_rectCount].bottom = b;
+    g_rectHud[g_rectCount] = hud;
+    ++g_rectCount;
+}
+
 static void computeLayout(void)
 {
     LAYOUT *L = &g_lay;
@@ -769,6 +794,19 @@ static void computeLayout(void)
     L->freeW = L->rightX - (L->leftX + L->sideW) - 8.0f;
     if (L->freeW < 160.0f) L->freeW = 160.0f;
     L->mikuMaxH = (float)clampDouble((double)g_height * 0.72, 260.0, 760.0);
+
+    /* Only these regions ever change. The centre of the screen (where the Miku
+       art lives, or nothing when it is hidden) is never repainted per tick. */
+    g_rectCount = 0;
+    addDirtyRect((int)L->leftX - 14, 16, (int)L->leftX + 260, 72, 0);                     /* title      */
+    addDirtyRect(g_width - (int)L->margin - 214, 16, g_width, 72, 0);                     /* autostart  */
+    addDirtyRect((int)L->leftX - 4, g_height - 26, (int)L->leftX + 720, g_height, 0);     /* key hints  */
+    addDirtyRect((int)L->leftX - 12, (int)L->topY - 6,
+                 (int)(L->leftX + L->sideW) + 6, (int)(L->leftY3 + 158.0f + 146.0f) + 6, 1); /* left cards  */
+    addDirtyRect((int)L->rightX - 6, (int)L->topY - 6,
+                 (int)(L->rightX + L->sideW) + 6, (int)(L->rightY2 + L->activityH) + 6, 1);   /* right cards */
+    addDirtyRect((int)L->leftX - 6, (int)L->graphY - 6,
+                 g_width - (int)L->margin + 6, (int)(L->graphY + L->graphH) + 6, 1);          /* history     */
 
     /* Destination rectangle of the (static) ASCII art. */
     scale = L->mikuMaxH / (float)MIKU_ART_HEIGHT;
@@ -1305,6 +1343,7 @@ static void setAutostart(int enabled)
         }
         RegDeleteValueW(key, OLD_RUN_VALUE); /* old "AereReact" entry */
         RegDeleteValueW(key, OLD_RUN_VALUE2); /* old "KnG_UI" entry */
+        RegDeleteValueW(key, OLD_RUN_VALUE3); /* old "KnG1412_UI" entry */
         if (!same) {
             RegSetValueExW(key, RUN_VALUE, 0, REG_SZ,
                 (const BYTE *)command, (DWORD)((wcslen(command) + 1) * sizeof(WCHAR)));
@@ -1317,6 +1356,7 @@ static void setAutostart(int enabled)
             RegDeleteValueW(key, RUN_VALUE);
             RegDeleteValueW(key, OLD_RUN_VALUE);
             RegDeleteValueW(key, OLD_RUN_VALUE2);
+            RegDeleteValueW(key, OLD_RUN_VALUE3);
             RegCloseKey(key);
         }
         g_autostart = 0;
@@ -1339,11 +1379,11 @@ static int prefDisabledIn(const WCHAR *keyName)
     return disabled;
 }
 
-/* Also honours an opt-out saved by earlier builds (AereReact, KnG_UI). */
+/* Also honours an opt-out saved by earlier builds (AereReact, KnG_UI, KnG1412_UI). */
 static int autostartWasManuallyDisabled(void)
 {
     return prefDisabledIn(PREF_KEY) || prefDisabledIn(OLD_PREF_KEY) ||
-           prefDisabledIn(OLD_PREF_KEY2);
+           prefDisabledIn(OLD_PREF_KEY2) || prefDisabledIn(OLD_PREF_KEY3);
 }
 
 static void saveAutostartDisabledPreference(int disabled)
@@ -1358,6 +1398,10 @@ static void saveAutostartDisabledPreference(int disabled)
         RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
         RegCloseKey(key);
     }
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_PREF_KEY3, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
+        RegCloseKey(key);
+    }
     if (RegCreateKeyExW(HKEY_CURRENT_USER, PREF_KEY, 0, NULL, 0,
         KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) return;
     if (disabled) {
@@ -1368,6 +1412,55 @@ static void saveAutostartDisabledPreference(int disabled)
         RegDeleteValueW(key, PREF_DISABLE_AUTOSTART);
     }
     RegCloseKey(key);
+}
+
+static int mikuHiddenIn(const WCHAR *keyName)
+{
+    HKEY key = NULL;
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    DWORD type = REG_DWORD;
+    int hidden = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, keyName, 0, KEY_QUERY_VALUE, &key) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(key, PREF_MIKU_HIDDEN, NULL, &type,
+            (BYTE *)&value, &size) == ERROR_SUCCESS && type == REG_DWORD && value == 1)
+            hidden = 1;
+        RegCloseKey(key);
+    }
+    return hidden;
+}
+
+static void loadMikuPreference(void)
+{
+    g_showMiku = !(mikuHiddenIn(PREF_KEY) || mikuHiddenIn(OLD_PREF_KEY3));
+}
+
+static void saveMikuPreference(void)
+{
+    HKEY key = NULL;
+    /* Drop the value the previous build stored, so it cannot override this one. */
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, OLD_PREF_KEY3, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        RegDeleteValueW(key, PREF_MIKU_HIDDEN);
+        RegCloseKey(key);
+    }
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, PREF_KEY, 0, NULL, 0,
+        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) return;
+    if (g_showMiku) {
+        RegDeleteValueW(key, PREF_MIKU_HIDDEN);
+    } else {
+        DWORD value = 1;
+        RegSetValueExW(key, PREF_MIKU_HIDDEN, 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+    }
+    RegCloseKey(key);
+}
+
+/* Takes effect through a full repaint: it clears the art when hiding and
+   redraws it once when showing. */
+static void toggleMiku(void)
+{
+    g_showMiku = !g_showMiku;
+    saveMikuPreference();
+    g_mikuDirty = 1;
 }
 
 static void initializeAutostart(void)
@@ -1724,7 +1817,7 @@ static void drawScene(void)
     line2(L->leftX - 10.0f, 28, L->leftX - 10.0f, 64, 0.08f, 0.85f, 0.82f, 0.76f, 1.4f);
     line2(w - 12, 28, w - 48, 28, 0.08f, 0.85f, 0.82f, 0.76f, 1.4f);
     line2(w - 12, 28, w - 12, 64, 0.08f, 0.85f, 0.82f, 0.76f, 1.4f);
-    textOut(1, L->leftX, 48, L"KnG1412//UI", 0.42f, 1.0f, 0.88f, 0.98f);
+    textOut(1, L->leftX, 48, L"Miku//UI", 0.42f, 1.0f, 0.88f, 0.98f);
     textOut(0, w - L->margin - 194.0f, 48,
         g_autostart ? L"AUTOSTART: ON" : L"AUTOSTART: OFF",
         0.34f, 0.67f, 0.72f, 0.95f);
@@ -1740,7 +1833,7 @@ static void drawScene(void)
     }
 
     textOut(0, L->leftX, h - 9.0f,
-        L"CTRL+ALT+H: HUD  |  CTRL+ALT+U: AUTOSTART  |  CTRL+ALT+Q: QUIT",
+        L"CTRL+ALT+H: HUD  |  CTRL+ALT+M: MIKU  |  CTRL+ALT+U: AUTOSTART  |  CTRL+ALT+Q: QUIT",
         0.31f, 0.64f, 0.68f, 0.90f);
 }
 
@@ -1751,12 +1844,14 @@ static void drawScene(void)
 static void paintFrame(void)
 {
     HDC windowDC;
-    int full, top;
+    int full, allRects, top, i;
 
     if (!g_hwnd) return;
     full = g_mikuDirty;
     if (GetUpdateRect(g_hwnd, NULL, FALSE)) full = 1;
     ValidateRect(g_hwnd, NULL); /* always, so WM_PAINT can never loop */
+    allRects = g_allRects;
+    g_allRects = 0;
     if (!g_ready) return;
 
     windowDC = GetDC(g_hwnd);
@@ -1767,24 +1862,55 @@ static void paintFrame(void)
     g_uptimeSec = GetTickCount64() / 1000ULL;
 
     if (bandBegin(windowDC)) {
-        if (!full && !IsRectEmpty(&g_mikuRect))
+        if (!full && g_showMiku && !IsRectEmpty(&g_mikuRect))
             ExcludeClipRect(windowDC, g_mikuRect.left, g_mikuRect.top,
                             g_mikuRect.right, g_mikuRect.bottom);
         for (top = 0; top < g_height; top += BAND_H) {
+            RECT blits[8];
+            int blitCount = 0;
             int rows = g_height - top;
             if (rows > BAND_H) rows = BAND_H;
+
+            if (full) {
+                /* Whole screen: clears everything (also removes a hidden Miku). */
+                blits[0].left = 0;
+                blits[0].top = top;
+                blits[0].right = g_width;
+                blits[0].bottom = top + rows;
+                blitCount = 1;
+            } else {
+                /* Normal tick: only the regions that can change. */
+                for (i = 0; i < g_rectCount && blitCount < 8; ++i) {
+                    int y0, y1;
+                    if (g_rectHud[i] && !g_showHud && !allRects) continue;
+                    y0 = g_rects[i].top > top ? g_rects[i].top : top;
+                    y1 = g_rects[i].bottom < top + rows ? g_rects[i].bottom : top + rows;
+                    if (y1 <= y0) continue;
+                    blits[blitCount].left = g_rects[i].left;
+                    blits[blitCount].top = y0;
+                    blits[blitCount].right = g_rects[i].right;
+                    blits[blitCount].bottom = y1;
+                    ++blitCount;
+                }
+            }
+            if (blitCount == 0) continue; /* nothing to draw in this band */
+
             g_bandTop = top;
             ZeroMemory(g_bandBits, (size_t)g_width * (size_t)BAND_H * sizeof(DWORD));
             drawScene();
             GdiFlush();
             g_gdiPending = 0;
-            BitBlt(windowDC, 0, top, g_width, rows, g_bandDC, 0, 0, SRCCOPY);
+            for (i = 0; i < blitCount; ++i)
+                BitBlt(windowDC, blits[i].left, blits[i].top,
+                       blits[i].right - blits[i].left, blits[i].bottom - blits[i].top,
+                       g_bandDC, blits[i].left, blits[i].top - top, SRCCOPY);
         }
         bandEnd();
         SelectClipRgn(windowDC, NULL);
     }
     if (full) {
-        drawMiku(windowDC);
+        /* With Miku hidden nothing is rendered and no art memory is touched. */
+        if (g_showMiku) drawMiku(windowDC);
         g_mikuDirty = 0;
     }
     ReleaseDC(g_hwnd, windowDC);
@@ -1808,21 +1934,24 @@ static void onTick(void)
 
 static void processGlobalKeys(void)
 {
-    static SHORT previousQ, previousH, previousU;
+    static SHORT previousQ, previousH, previousU, previousM;
     SHORT currentQ = GetAsyncKeyState('Q');
     SHORT currentH = GetAsyncKeyState('H');
     SHORT currentU = GetAsyncKeyState('U');
+    SHORT currentM = GetAsyncKeyState('M');
     int ctrl = ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
     int alt = ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0);
 
     if (ctrl && alt) {
         if ((currentQ & 0x8000) && !(previousQ & 0x8000)) g_exitRequested = 1;
-        if ((currentH & 0x8000) && !(previousH & 0x8000)) g_showHud = !g_showHud;
+        if ((currentH & 0x8000) && !(previousH & 0x8000)) { g_showHud = !g_showHud; g_allRects = 1; }
+        if ((currentM & 0x8000) && !(previousM & 0x8000)) toggleMiku();
         if ((currentU & 0x8000) && !(previousU & 0x8000)) toggleAutostart();
     }
     previousQ = currentQ;
     previousH = currentH;
     previousU = currentU;
+    previousM = currentM;
 }
 
 
@@ -1832,7 +1961,8 @@ static int registerGlobalHotkeys(HWND hwnd)
     BOOL hud = RegisterHotKey(hwnd, HOTKEY_HUD, modifiers, 'H');
     BOOL autostart = RegisterHotKey(hwnd, HOTKEY_AUTOSTART, modifiers, 'U');
     BOOL quit = RegisterHotKey(hwnd, HOTKEY_QUIT, modifiers, 'Q');
-    if (hud && autostart && quit) {
+    BOOL miku = RegisterHotKey(hwnd, HOTKEY_MIKU, modifiers, 'M');
+    if (hud && autostart && quit && miku) {
         g_globalHotkeysRegistered = 1;
         return 1;
     }
@@ -1840,6 +1970,7 @@ static int registerGlobalHotkeys(HWND hwnd)
     UnregisterHotKey(hwnd, HOTKEY_HUD);
     UnregisterHotKey(hwnd, HOTKEY_AUTOSTART);
     UnregisterHotKey(hwnd, HOTKEY_QUIT);
+    UnregisterHotKey(hwnd, HOTKEY_MIKU);
     g_globalHotkeysRegistered = 0;
     return 0;
 }
@@ -1850,6 +1981,7 @@ static void unregisterGlobalHotkeys(HWND hwnd)
     UnregisterHotKey(hwnd, HOTKEY_HUD);
     UnregisterHotKey(hwnd, HOTKEY_AUTOSTART);
     UnregisterHotKey(hwnd, HOTKEY_QUIT);
+    UnregisterHotKey(hwnd, HOTKEY_MIKU);
     g_globalHotkeysRegistered = 0;
 }
 
@@ -1870,6 +2002,12 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_HOTKEY:
         if (wParam == HOTKEY_HUD) {
             g_showHud = !g_showHud;
+            g_allRects = 1;
+            paintFrame();
+            return 0;
+        }
+        if (wParam == HOTKEY_MIKU) {
+            toggleMiku();
             paintFrame();
             return 0;
         }
@@ -1895,9 +2033,10 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (wParam == TIMER_KEYS) {
             int hud = g_showHud;
             int autostart = g_autostart;
+            int miku = g_showMiku;
             processGlobalKeys();
             if (g_exitRequested) { DestroyWindow(hwnd); return 0; }
-            if (hud != g_showHud || autostart != g_autostart) paintFrame();
+            if (hud != g_showHud || autostart != g_autostart || miku != g_showMiku) paintFrame();
             return 0;
         }
         if (wParam == TIMER_MAIN) {
@@ -1972,6 +2111,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     g_height = GetSystemMetrics(SM_CYSCREEN);
     initHistory();
     readCpuName();
+    loadMikuPreference();
     initGpuCounters();
     initializeAutostart();
 
