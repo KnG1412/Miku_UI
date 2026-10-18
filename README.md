@@ -66,7 +66,6 @@ To uninstall: turn off autostart with `Ctrl+Alt+U`, quit the program and delete 
 - Only the regions that actually change (cards, title, key hints, history graph) are repainted each second. The middle of the screen is never touched per tick.
 - With Miku hidden (`Ctrl+Alt+M`), the art is not rendered at all: no temporary image is created and its data is never read. If you start the program with Miku already hidden, that cost is never paid. Hiding the HUD cards (`Ctrl+Alt+H`) as well leaves only the title and key hints to repaint.
 - `dxgi.dll` is loaded only while enumerating GPUs, then unloaded.
-- Runs at below-normal priority with EcoQoS enabled, and uses a timer with tolerance so Windows can coalesce wake-ups.
 
 <img width="1436" height="748" alt="Screenshot 2026-10-18 190710" src="https://github.com/user-attachments/assets/a6142081-8c9a-41cc-aabd-dbf1c0ae793b" />
 <img width="1392" height="751" alt="Screenshot 2026-10-18 190727" src="https://github.com/user-attachments/assets/f62c76cc-3446-47d4-ac6b-906992bcb80f" />
