@@ -68,9 +68,8 @@ To uninstall: turn off autostart with `Ctrl+Alt+U`, quit the program and delete 
 - `dxgi.dll` is loaded only while enumerating GPUs, then unloaded.
 
 <img width="1436" height="748" alt="Screenshot 2026-10-18 190710" src="https://github.com/user-attachments/assets/a6142081-8c9a-41cc-aabd-dbf1c0ae793b" />
-<img width="1392" height="751" alt="Screenshot 2026-10-18 190727" src="https://github.com/user-attachments/assets/f62c76cc-3446-47d4-ac6b-906992bcb80f" />
 
-Task Manager (Details tab) shows `Miku_UI.exe` using approximately 200KB - 1.2 MB of RAM, with a commit size of about 6.5 MB.
+Task Manager shows `Miku_UI.exe` uses only 0.1MB of RAM.
 
 ## Known limitations
 
